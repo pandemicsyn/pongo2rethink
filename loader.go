@@ -1,12 +1,12 @@
 // pongo2rethink provides a pongo2.TemplateLoader that pulls template's from RethinkDB.
 //
-//  opts := pongo2rethink.Opts{
-//		DatabaseName: "test",
-//      TableName: "templates",
-//      Prefix: "somePrefix",
-//      Session: someRethinkSession,
-//  }}
-//  dbtmpl := pongo2.NewSet("assetfs", pongo2rethink.New(opts))
+//	opts := pongo2rethink.Opts{
+//   TableName: "templates",
+//   Prefix:    "randocustomer",
+//   Session:   s.rethink,
+//  }
+//  dbtmpl := pongo2.NewSet("assetfs", pongo2rethink.NewPongoLoader(&opts))
+//  res := dbtmpl.RenderTemplateFile("templates/tiny.pongo", pongo2.Context{"name": "florian"})
 //
 // It also has some additional methods to let you manage your templates.
 package pongo2rethink
@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"path/filepath"
 
 	rethink "github.com/dancannon/gorethink"
@@ -23,17 +24,20 @@ import (
 )
 
 type Opts struct {
-	DatabaseName string           //Database to use
-	TableName    string           //Table to use
-	Prefix       string           //optional prefix to apply to all paths
-	Session      *rethink.Session //The rethink session that should be used
+	TableName string           //Table to use
+	Prefix    string           //optional prefix to apply to all paths
+	Session   *rethink.Session //The rethink session that should be used
 }
 
 type RethinkTemplateLoader struct {
 	r *Opts
 }
 
-func New(opts *Opts) pongo2.TemplateLoader {
+func NewPongoLoader(opts *Opts) pongo2.TemplateLoader {
+	return &RethinkTemplateLoader{r: opts}
+}
+
+func NewRethinkLoader(opts *Opts) *RethinkTemplateLoader {
 	return &RethinkTemplateLoader{r: opts}
 }
 
@@ -45,12 +49,18 @@ type Template struct {
 func (t *RethinkTemplateLoader) fetchTemplate(path string) (*Template, error) {
 	var template Template
 	rpath := t.r.Prefix + "/" + path
-	cursor, err := rethink.Table(t.r.DatabaseName).Get(rpath).Run(t.r.Session)
+	log.Println("fetching:", rpath)
+	cursor, err := rethink.Table(t.r.TableName).Get(rpath).Run(t.r.Session)
 	if err != nil {
+
 		return &template, err
 	}
 	err = cursor.One(&template)
 	cursor.Close()
+	if err == rethink.ErrEmptyResult {
+		log.Println("Template not found:", rpath)
+		return &template, fmt.Errorf("Template not found.")
+	}
 	return &template, err
 }
 
@@ -61,7 +71,7 @@ func (t *RethinkTemplateLoader) GetTemplate(path string) (*Template, error) {
 
 // LoadTemplate inserts a given Template into rethink
 func (t *RethinkTemplateLoader) LoadTemplate(template Template) error {
-	result, err := rethink.Table(t.r.DatabaseName).Insert(template).RunWrite(t.r.Session)
+	result, err := rethink.Table(t.r.TableName).Insert(template).RunWrite(t.r.Session)
 	if err != nil {
 		return err
 	}
@@ -74,13 +84,13 @@ func (t *RethinkTemplateLoader) LoadTemplate(template Template) error {
 // LoadTemplateFromFile reads a given file and loads it into rethink
 func (t *RethinkTemplateLoader) LoadTemplateFromFile(path string) (err error) {
 	var template Template
-	template.Name = path
+	template.Name = t.r.Prefix + "/" + path
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
 		return err
 	}
 	template.Data = string(data)
-	result, err := rethink.Table(t.r.DatabaseName).Insert(template).RunWrite(t.r.Session)
+	result, err := rethink.Table(t.r.TableName).Insert(template).RunWrite(t.r.Session)
 	if err != nil {
 		return err
 	}
@@ -99,14 +109,14 @@ func (t *RethinkTemplateLoader) LoadTemplatesFromDir(dir, pattern string) error 
 	}
 	var template Template
 	for _, tfile := range tfiles {
-		template.Name = tfile
+		template.Name = t.r.Prefix + "/" + tfile
 		data, err := ioutil.ReadFile(tfile)
 		if err != nil {
 			return err
 		}
 		template.Data = string(data)
 		// TODO: batch insert ?
-		result, err := rethink.Table(t.r.DatabaseName).Insert(template).RunWrite(t.r.Session)
+		result, err := rethink.Table(t.r.TableName).Insert(template).RunWrite(t.r.Session)
 		if err != nil {
 			return err
 		}
@@ -119,6 +129,7 @@ func (t *RethinkTemplateLoader) LoadTemplatesFromDir(dir, pattern string) error 
 
 // GetTemplateBytes retrieves a templates byte from rethink
 func (t *RethinkTemplateLoader) GetTemplateBytes(path string) ([]byte, error) {
+	log.Println("fetching:", path)
 	template, err := t.fetchTemplate(path)
 	return []byte(template.Data), err
 }
